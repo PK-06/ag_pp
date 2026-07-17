@@ -6,7 +6,7 @@ pip install -r requirements.txt
 ## Lancement
 python app.py
 
-Ouvrir http://localhost:5000
+Ouvrir http://localhost:10000
 
 Compte admin cree automatiquement au premier lancement : admin / admin123
 (a changer immediatement une fois connecte, pas d'ecran dedie -> passer par sqlite ou ajouter une route si besoin)
