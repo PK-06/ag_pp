@@ -281,6 +281,7 @@ def add_months(d, months):
 
 
 RECURRENCE_FREQS = ('daily', 'weekly', 'monthly', 'yearly')
+MAX_MULTIDAY_SPAN = 365  # garde-fou anti-abus pour les evenements multi-jours
 
 
 @app.route('/api/rdv')
@@ -341,8 +342,21 @@ def api_rdv_create():
     except ValueError:
         return jsonify({'error': 'date invalide'}), 400
 
+    date_fin_raw = (data.get('date_fin') or '').strip()
+
     dates = [base_date]
-    if recurrence in RECURRENCE_FREQS and count > 1:
+    if date_fin_raw:
+        # Evenement sur plusieurs jours : une occurrence par jour, meme horaire,
+        # meme titre/categorie, jusqu'a la date de fin incluse.
+        try:
+            end_date = datetime.strptime(date_fin_raw, '%Y-%m-%d')
+        except ValueError:
+            return jsonify({'error': 'date de fin invalide'}), 400
+        if end_date < base_date:
+            return jsonify({'error': 'la date de fin doit etre posterieure ou egale a la date de debut'}), 400
+        span_days = min((end_date - base_date).days, MAX_MULTIDAY_SPAN)
+        dates = [base_date + timedelta(days=i) for i in range(span_days + 1)]
+    elif recurrence in RECURRENCE_FREQS and count > 1:
         for i in range(1, count):
             if recurrence == 'daily':
                 dates.append(base_date + timedelta(days=i))

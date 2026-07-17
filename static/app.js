@@ -237,9 +237,19 @@ function renderGrid(events) {
             block.style.height = Math.max(2.5, bottom - top) + '%';
             block.style.background = color;
 
+            const durationMin = timeToMin(ev.heure_fin) - timeToMin(ev.heure_debut);
+            let descHtml = '';
+            if (ev.description && ev.description.trim() && durationMin >= 30) {
+                let clamp = 1;
+                if (durationMin >= 120) clamp = 6;
+                else if (durationMin >= 60) clamp = 3;
+                descHtml = `<span class="tt-block-desc" style="-webkit-line-clamp:${clamp};">${escapeHtml(ev.description)}</span>`;
+            }
+
             const contentHtml = `
                 ${ev.categorie_nom ? `<span class="tt-block-category">${escapeHtml(ev.categorie_nom)}</span>` : ''}
                 <span class="tt-block-subject">${escapeHtml(ev.titre)} ${ev.uneditable ? '🔒' : ''}</span>
+                ${descHtml}
                 <span class="tt-block-time">${ev.heure_debut} - ${ev.heure_fin}</span>`;
 
             if (canUserEditThisBlock) {
@@ -512,6 +522,11 @@ function openRdvPanel(ev, presetDate, presetStart, presetEnd) {
     const recurBlock = document.getElementById('rdv-recur-block');
     const recurCheck = document.getElementById('rdv-recur-check');
     const recurOptions = document.getElementById('rdv-recur-options');
+    
+    const multidayBlock = document.getElementById('rdv-multiday-block');
+    const multidayCheck = document.getElementById('rdv-multiday-check');
+    const multidayOptions = document.getElementById('rdv-multiday-options');
+    const dateFinInput = document.getElementById('rdv-date-fin');
 
     if (ev) {
         clearActiveSelection(); 
@@ -525,6 +540,10 @@ function openRdvPanel(ev, presetDate, presetStart, presetEnd) {
         document.getElementById('rdv-color').value = ev.couleur || DEFAULT_COLOR;
         document.getElementById('rdv-category').value = ev.category_id || '';
         document.getElementById('rdv-meta').textContent = ev.auteur ? `Cree par ${ev.auteur} le ${ev.created_at}` : '';
+        multidayBlock.classList.add('hidden');
+        multidayCheck.checked = false;
+        multidayCheck.disabled = false;
+        multidayOptions.classList.add('hidden');
         deleteBtn.classList.toggle('hidden', readonly);
         recurBlock.classList.add('hidden');
         recurCheck.checked = false;
@@ -540,6 +559,12 @@ function openRdvPanel(ev, presetDate, presetStart, presetEnd) {
         document.getElementById('rdv-color').value = DEFAULT_COLOR;
         document.getElementById('rdv-category').value = '';
         document.getElementById('rdv-meta').textContent = '';
+        multidayBlock.classList.toggle('hidden', readonly);
+        multidayCheck.checked = false;
+        multidayCheck.disabled = false;
+        multidayOptions.classList.add('hidden');
+        dateFinInput.value = presetDate || fmtDate(new Date());
+        recurCheck.disabled = false;
         deleteBtn.classList.add('hidden');
         recurBlock.classList.toggle('hidden', readonly);
         recurCheck.checked = false;
@@ -575,6 +600,26 @@ document.getElementById('rdv-cancel').addEventListener('click', closeRdvPanel);
 
 document.getElementById('rdv-recur-check').addEventListener('change', (e) => {
     document.getElementById('rdv-recur-options').classList.toggle('hidden', !e.target.checked);
+    const mdCheck = document.getElementById('rdv-multiday-check');
+    if (e.target.checked) {
+        mdCheck.checked = false;
+        document.getElementById('rdv-multiday-options').classList.add('hidden');
+        mdCheck.disabled = true;
+    } else {
+        mdCheck.disabled = false;
+    }
+});
+
+document.getElementById('rdv-multiday-check').addEventListener('change', (e) => {
+    document.getElementById('rdv-multiday-options').classList.toggle('hidden', !e.target.checked);
+    const recCheck = document.getElementById('rdv-recur-check');
+    if (e.target.checked) {
+        recCheck.checked = false;
+        document.getElementById('rdv-recur-options').classList.add('hidden');
+        recCheck.disabled = true;
+    } else {
+        recCheck.disabled = false;
+    }
 });
 
 document.getElementById('rdv-category').addEventListener('change', (e) => {
@@ -630,9 +675,14 @@ form.addEventListener('submit', async (e) => {
         payload.is_balisage = document.getElementById('rdv-is-balisage').checked ? 1 : 0;
     }
 
-    if (!id && document.getElementById('rdv-recur-check').checked) {
-        payload.recurrence = document.getElementById('rdv-recur-freq').value;
-        payload.recurrence_count = parseInt(document.getElementById('rdv-recur-count').value, 10) || 1;
+    if (!id) {
+        if (document.getElementById('rdv-multiday-check').checked) {
+            const df = document.getElementById('rdv-date-fin').value;
+            if (df) payload.date_fin = df;
+        } else if (document.getElementById('rdv-recur-check').checked) {
+            payload.recurrence = document.getElementById('rdv-recur-freq').value;
+            payload.recurrence_count = parseInt(document.getElementById('rdv-recur-count').value, 10) || 1;
+        }
     }
 
     const url = id ? `/api/rdv/${id}` : '/api/rdv';

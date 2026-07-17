@@ -409,3 +409,15 @@ input[type=color] { padding: 3px; height: 38px; cursor: pointer; }
   .chat-contacts { width: 100%; border-right: none; border-bottom: 1px solid var(--border); max-height: 160px; }
   .chat-messages { height: 400px; }
 }
+
+.tt-block-desc {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: .68rem;
+  font-weight: 400;
+  opacity: .92;
+  margin: .1rem 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
