@@ -1,0 +1,168 @@
+{% extends 'base.html' %}
+{% block title %}Agenda{% endblock %}
+{% block content %}
+
+<style>
+    /* Force l'alignement côte à côte de l'emploi du temps et du panneau */
+    .calendar-layout {
+        display: flex;
+        flex-direction: row;
+        gap: 24px;
+        align-items: flex-start;
+        width: 100%;
+    }
+
+    /* L'emploi du temps prend tout l'espace restant */
+    .calendar-main {
+        flex: 1;
+        min-width: 0; /* Évite les bugs d'affichage de grille ou de débordement */
+    }
+
+    /* Le panneau de droite garde une taille fixe et propre */
+    .side-panel {
+        width: 350px;
+        flex-shrink: 0;
+    }
+
+    /* Adaptabilité pour les petits écrans (tablettes et smartphones) */
+    @media (max-width: 1024px) {
+        .calendar-layout {
+            flex-direction: column;
+        }
+        .side-panel {
+            width: 100%;
+        }
+    }
+</style>
+
+<div class="calendar-layout">
+    <div class="calendar-main">
+        <div class="calendar-toolbar">
+            <h1 style="margin-right: 10px;">Mon emploi du temps</h1>
+            <span style="margin-right: 10px;" class="date" id="week-label"></span>
+            <button id="prev-week" class="btn btn-outline btn-sm">&larr; Semaine prec.</button>
+            <button id="today-btn" class="btn btn-outline btn-sm">Aujourd'hui</button>
+            <button id="next-week" class="btn btn-outline btn-sm">Semaine suiv. &rarr;</button>
+            <div style="flex:1"></div>
+            {% if current_user['role'] in ('admin', 'editor') %}
+            <button id="add-rdv-btn" class="btn btn-sm">+ Nouveau RDV</button>
+            {% endif %}
+        </div>
+
+        <div class="card">
+            <div class="timetable">
+                <div class="tt-hours">
+                    <div class="tt-hours-spacer"></div>
+                    <div class="tt-hours-body" id="tt-hours-body"></div>
+                </div>
+                <div class="tt-days" id="tt-days"></div>
+            </div>
+        </div>
+    </div>
+
+    <aside class="side-panel">
+        <div id="panel-notes">
+            <h3>Mes notes</h3>
+            <p class="small muted">Notes privees, visibles seulement par vous. Sauvegarde automatique.</p>
+            <textarea id="notes-textarea" rows="18" placeholder="Ecrivez vos notes ici..."></textarea>
+            <p class="meta" id="notes-status">&nbsp;</p>
+        </div>
+
+        <div id="panel-rdv" class="hidden">
+            <div class="panel-rdv-header">
+                <h3 id="panel-rdv-title">Rendez-vous</h3>
+                <button type="button" class="modal-close" id="panel-rdv-close">&times;</button>
+            </div>
+            <form id="rdv-form">
+                <input type="hidden" id="rdv-id">
+                <label>Date</label>
+                <input type="date" id="rdv-date" required>
+                <div class="row">
+                    <div>
+                        <label>Heure debut</label>
+                        <input type="time" id="rdv-start" required>
+                    </div>
+                    <div>
+                        <label>Heure fin</label>
+                        <input type="time" id="rdv-end" required>
+                    </div>
+                </div>
+                <label>Titre</label>
+                <input type="text" id="rdv-titre" required maxlength="200">
+
+                <div class="row">
+                    <div>
+                        <label>Categorie</label>
+                        <select id="rdv-category">
+                            <option value="">Aucune</option>
+                        </select>
+                    </div>
+                    <div class="color-field">
+                        <label>Couleur</label>
+                        <input type="color" id="rdv-color" value="#2e5c8a">
+                    </div>
+                </div>
+                <div id="new-category-box" class="new-category-box hidden">
+                    <input type="text" id="new-category-name" placeholder="Nom de la categorie" maxlength="60">
+                    <input type="color" id="new-category-color" value="#2e5c8a">
+                    <button type="button" id="new-category-save" class="btn btn-sm">Ajouter</button>
+                    <button type="button" id="new-category-cancel" class="btn btn-outline btn-sm">Annuler</button>
+                </div>
+                <button type="button" id="new-category-toggle" class="btn-link-small">+ Nouvelle categorie</button>
+
+                <label>Description</label>
+                <textarea id="rdv-desc" rows="4"></textarea>
+
+                <div id="admin-options-block" class="hidden" style="border-top: 1px solid var(--border); margin-top: 10px; padding-top: 10px; margin-bottom: 10px;">
+                    <label class="checkbox-label" style="margin-top: 0; font-weight: 600; display: flex; align-items: center; gap: 8px;">
+                        <input style="width: auto; margin: 0;" type="checkbox" id="rdv-uneditable"> Verrouiller pour les éditeurs
+                    </label>
+                    <label class="checkbox-label" style="margin-top: 5px; font-weight: 600; display: flex; align-items: center; gap: 8px;">
+                        <input style="width: auto; margin: 0;" type="checkbox" id="rdv-is-balisage"> Balisage (Hachures)
+                    </label>
+                </div>
+
+                <div id="rdv-recur-block">
+                    <label class="checkbox-label">
+                        <input style="width: 10px;" type="checkbox" id="rdv-recur-check"> Repeter ce rendez-vous
+                    </label>
+                    <div id="rdv-recur-options" class="row hidden">
+                        <div>
+                            <label>Frequence</label>
+                            <select id="rdv-recur-freq">
+                                <option value="daily">Chaque jour</option>
+                                <option value="weekly" selected>Chaque semaine</option>
+                                <option value="monthly">Chaque mois</option>
+                                <option value="yearly">Chaque annee</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label>Nombre d'occurrences</label>
+                            <input type="number" id="rdv-recur-count" min="2" max="104" value="4">
+                        </div>
+                    </div>
+                </div>
+
+                <p id="rdv-meta" class="meta"></p>
+                <p id="modal-error" class="error"></p>
+                <div class="modal-actions">
+                    <button type="button" id="rdv-delete" class="btn-danger-small hidden">Supprimer</button>
+                    <div class="spacer"></div>
+                    <button type="button" id="rdv-cancel" class="btn btn-outline btn-sm">Annuler</button>
+                    <button type="submit" id="rdv-save" class="btn btn-sm">Enregistrer</button>
+                </div>
+            </form>
+        </div>
+        <div id="balisage-legend" class="card hidden" style="margin-top: 15px; padding: 10px 15px;">
+            <h4 style="margin: 0 0 8px 0; font-size: 0.9rem; font-family: Georgia, serif; color: var(--navy);">Légende des balisages</h4>
+            <div id="legend-list" style="display: flex; flex-wrap: wrap; gap: 15px; font-size: 0.85rem;"></div>
+        </div>
+    </aside>
+</div>
+
+<script>
+    window.CAN_EDIT = {{ 'true' if current_user['role'] in ('admin', 'editor') else 'false' }};
+    window.USER_ROLE = '{{ current_user["role"] }}';
+</script>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+{% endblock %}

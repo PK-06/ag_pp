@@ -1,0 +1,31 @@
+{% extends 'base.html' %}
+{% block title %}Categories{% endblock %}
+{% block content %}
+<div class="topbar">
+    <h1>Categories</h1>
+</div>
+
+<div class="card">
+    <div id="cat-page-list">
+        <p class="small muted">Chargement...</p>
+    </div>
+</div>
+
+{% if current_user['role'] in ('admin', 'editor') %}
+<div class="card">
+    <h2>Creer une categorie</h2>
+    <div class="new-category-box mt-1">
+        <input type="text" id="cat-new-name" placeholder="Nom de la categorie" maxlength="60">
+        <input type="color" id="cat-new-color" value="#2e5c8a">
+        <button type="button" id="cat-new-save" class="btn btn-sm">Ajouter</button>
+    </div>
+    <p id="cat-page-error" class="error"></p>
+</div>
+{% endif %}
+
+<script>
+    window.CAN_EDIT_CATEGORIES = {{ 'true' if current_user['role'] in ('admin', 'editor') else 'false' }};
+    window.CAN_DELETE_CATEGORIES = {{ 'true' if current_user['role'] == 'admin' else 'false' }};
+</script>
+<script src="{{ url_for('static', filename='categories.js') }}"></script>
+{% endblock %}

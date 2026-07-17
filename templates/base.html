@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}Planning{% endblock %}</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/boxicons/2.1.4/css/boxicons.min.css">
+<script>
+  (function() {
+    if (localStorage.getItem('sidebarCollapsed') === '1') {
+      document.documentElement.classList.add('sidebar-collapsed');
+    }
+  })();
+</script>
+</head>
+<body>
+<div class="app">
+  {% if current_user %}
+  <nav class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">R</div>
+      <div class="brand-text">
+        <div class="brand-name">Planning</div>
+        <div class="brand-sub">Gestion des rendez-vous</div>
+      </div>
+      <button type="button" class="sidebar-toggle" id="sidebar-toggle" title="Replier / deplier le menu">
+        <i class="bx bx-chevron-left"></i>
+      </button>
+    </div>
+
+    <div class="nav-section-title">Navigation</div>
+    <a class="nav-link {% if request.endpoint == 'calendar_view' %}active{% endif %}" href="{{ url_for('calendar_view') }}" title="Agenda">
+      <span class="nav-icon"><i class="bx bx-calendar"></i></span><span class="nav-label">Agenda</span>
+    </a>
+    <a class="nav-link {% if request.endpoint == 'categories_view' %}active{% endif %}" href="{{ url_for('categories_view') }}" title="Categories">
+      <span class="nav-icon"><i class="bx bx-purchase-tag-alt"></i></span><span class="nav-label">Categories</span>
+    </a>
+    <a class="nav-link {% if request.endpoint == 'chat_view' %}active{% endif %}" href="{{ url_for('chat_view') }}" title="Chat">
+      <span class="nav-icon"><i class="bx bx-message-dots"></i></span><span class="nav-label">Chat</span>
+    </a>
+    {% if current_user['role'] == 'admin' %}
+    <a class="nav-link {% if request.endpoint == 'admin_users' %}active{% endif %}" href="{{ url_for('admin_users') }}" title="Utilisateurs">
+      <span class="nav-icon"><i class="bx bx-group"></i></span><span class="nav-label">Utilisateurs</span>
+    </a>
+    {% endif %}
+
+    <div class="sidebar-footer">
+      <div class="user-chip nav-label">{{ current_user['username'] }}</div>
+      <div class="user-role nav-label">
+        {% if current_user['role'] == 'admin' %}Administrateur
+        {% elif current_user['role'] == 'editor' %}Editeur
+        {% else %}Lecteur{% endif %}
+      </div>
+      <a class="logout-link nav-label" href="{{ url_for('logout') }}" title="Se deconnecter">
+        <i class="bx bx-log-out nav-icon-inline"></i><span class="nav-label-inline">Se deconnecter</span>
+      </a>
+    </div>
+  </nav>
+  {% endif %}
+
+  <main class="main">
+    {% block content %}{% endblock %}
+  </main>
+</div>
+<script src="{{ url_for('static', filename='layout.js') }}"></script>
+</body>
+</html>

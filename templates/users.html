@@ -1,0 +1,57 @@
+{% extends 'base.html' %}
+{% block title %}Utilisateurs{% endblock %}
+{% block content %}
+<div class="topbar">
+    <h1>Gestion des utilisateurs</h1>
+</div>
+
+<div class="card">
+    <table>
+        <thead>
+            <tr><th>Utilisateur</th><th>Role</th><th>Cree le</th><th></th></tr>
+        </thead>
+        <tbody>
+        {% for u in users %}
+            <tr>
+                <td>{{ u['username'] }}</td>
+                <td><span class="badge badge-{{ u['role'] }}">{{ u['role'] }}</span></td>
+                <td class="muted small">{{ u['created_at'] }}</td>
+                <td class="text-right">
+                    {% if u['role'] != 'admin' %}
+                    <form method="post" action="{{ url_for('admin_users_delete', user_id=u['id']) }}"
+                          onsubmit="return confirm('Supprimer cet utilisateur ?');">
+                        <button type="submit" class="btn-danger-small">Supprimer</button>
+                    </form>
+                    {% endif %}
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="card">
+    <h2>Creer un compte</h2>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    <form method="post" class="form-grid mt-1">
+        <div class="form-row">
+            <label>Nom d'utilisateur</label>
+            <input type="text" name="username" required>
+        </div>
+        <div class="form-row">
+            <label>Mot de passe</label>
+            <input type="password" name="password" required>
+        </div>
+        <div class="form-row">
+            <label>Role</label>
+            <select name="role" required>
+                <option value="editor">Editeur</option>
+                <option value="viewer">Lecteur</option>
+            </select>
+        </div>
+        <div class="form-row" style="align-self: end;">
+            <button type="submit" class="btn">Creer</button>
+        </div>
+    </form>
+</div>
+{% endblock %}
