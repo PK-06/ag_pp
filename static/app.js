@@ -409,9 +409,10 @@ function enableMultiDaySelect() {
         return { bodies, aIdx, aMin, bIdx, bMin };
     }
 
-    function renderSelection(startBody, startMin, curBody, curMin) {
+    function renderSelection(startBody, startMin, curBody, curMin, e) {
         clearActiveSelection();
-        const { bodies, aIdx, aMin, bIdx, bMin } = orderedRange(startBody, startMin, curBody, curMin);
+        if ( startMin === curMin && e.buttons === 0 ) { curMin += 30 }
+        const { bodies, aIdx, aMin, bIdx, bMin } = orderedRange(startBody, startMin, curBody, curMin);        
         for (let i = aIdx; i <= bIdx; i++) {
             let top, bottom;
             if (aIdx === bIdx) { top = aMin; bottom = bMin; }
@@ -438,7 +439,7 @@ function enableMultiDaySelect() {
         isDragging = true;
         startBody = body;
         startMin = minFromEvent(e, body);
-        renderSelection(startBody, startMin, startBody, startMin);
+        renderSelection(startBody, startMin, startBody, startMin, e);
         e.preventDefault();
     });
 
@@ -446,7 +447,7 @@ function enableMultiDaySelect() {
         if (!selecting) return;
         const body = bodyAtPoint(e.clientX, e.clientY) || startBody;
         const curMin = minFromEvent(e, body);
-        renderSelection(startBody, startMin, body, curMin);
+        renderSelection(startBody, startMin, body, curMin, e);
     });
 
     document.addEventListener('mouseup', (e) => {
@@ -468,6 +469,7 @@ function enableMultiDaySelect() {
             pasteTargetDate = dateStart;
             pasteTargetMin = top;
         }
+        renderSelection(startBody, startMin, body, curMin, e);
         openRdvPanel(null, dateStart, minToTime(top), minToTime(bottom), dateEnd !== dateStart ? dateEnd : null);
     });
 
