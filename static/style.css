@@ -257,6 +257,7 @@ input[type=color] { padding: 3px; height: 38px; cursor: pointer; }
   cursor: pointer;
 }
 .tt-block.editable { cursor: grab; }
+.tt-block.selected { outline: 2px solid white; box-shadow: 0 0 0 2px var(--navy), 0 2px 8px rgba(0,0,0,.3); z-index: 3; }
 .tt-block.dragging { opacity: .85; z-index: 6; box-shadow: 0 6px 16px rgba(0,0,0,.35); cursor: grabbing; }
 .tt-block:hover { filter: brightness(1.07); text-decoration: none; box-shadow: 0 2px 8px rgba(0,0,0,.25); }
 .tt-block-category { font-size: .64rem; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; opacity: .95; }

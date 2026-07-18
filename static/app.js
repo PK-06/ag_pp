@@ -12,7 +12,12 @@ let currentMonday = mondayOf(new Date());
 let categories = [];
 let isDragging = false;
 let isPanelEditing = false; // true while the rdv form (create/edit) is shown in the side panel
-let activeSelectionEl = null; // Stocke l'élément HTML de la sélection en cours
+let activeSelectionEls = []; // Elements HTML de la selection en cours (peut couvrir plusieurs jours)
+let lastLoadedEvents = []; // Derniers evenements charges pour la semaine (nav clavier, collage)
+let selectedEvent = null; // RDV actuellement selectionne (clic, ou navigation clavier)
+let clipboardRdv = null; // RDV copie (Ctrl+C)
+let pasteTargetDate = null; // Date du dernier endroit clique (cible de collage)
+let pasteTargetMin = null; // Minute (depuis DAY_START) du dernier endroit clique
 
 function mondayOf(d) {
     const date = new Date(d);
@@ -24,9 +29,23 @@ function mondayOf(d) {
 
 // Supprime proprement la sélection visuelle du calendrier
 function clearActiveSelection() {
-    if (activeSelectionEl) {
-        activeSelectionEl.remove();
-        activeSelectionEl = null;
+    activeSelectionEls.forEach(el => el.remove());
+    activeSelectionEls = [];
+}
+
+// Selectionne visuellement un rdv (clic ou navigation clavier)
+function selectEvent(ev, block) {
+    selectedEvent = ev;
+    document.querySelectorAll('.tt-block.selected').forEach(b => b.classList.remove('selected'));
+    if (block) block.classList.add('selected');
+}
+
+function highlightSelectedById(id) {
+    document.querySelectorAll('.tt-block.selected').forEach(b => b.classList.remove('selected'));
+    const block = document.querySelector(`.tt-block[data-id="${id}"]`);
+    if (block) {
+        block.classList.add('selected');
+        block.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     }
 }
 
@@ -144,7 +163,9 @@ async function loadWeek() {
     const end = fmtDate(addDays(currentMonday, 6));
     const res = await fetch(`/api/rdv?start=${start}&end=${end}`);
     const events = await res.json();
+    lastLoadedEvents = events;
     renderGrid(events);
+    if (selectedEvent) highlightSelectedById(selectedEvent.id);
 }
 
 function renderGrid(events) {
@@ -252,6 +273,7 @@ function renderGrid(events) {
             const block = el('div', 'tt-block' + (canDragThisBlock ? ' editable' : '') +
                 (isMultiDay && !isStartDay ? ' tt-block-cont-before' : '') +
                 (isMultiDay && !isEndDay ? ' tt-block-cont-after' : ''));
+            block.dataset.id = ev.id;
             block.style.top = top + '%';
             block.style.height = Math.max(2.5, bottom - top) + '%';
             block.style.background = color;
@@ -290,14 +312,16 @@ function renderGrid(events) {
             } else {
                 block.innerHTML = contentHtml;
                 block.addEventListener('mousedown', (e) => e.stopPropagation());
-                block.addEventListener('click', (e) => { e.stopPropagation(); openRdvPanel(ev); });
+                block.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    selectEvent(ev, block);
+                    pasteTargetDate = ev.date;
+                    pasteTargetMin = timeToMin(ev.heure_debut);
+                    openRdvPanel(ev);
+                });
             }
             body.appendChild(block);
         });
-
-        if (window.CAN_EDIT) {
-            enableDragSelect(body);
-        }
 
         col.appendChild(body);
         daysWrap.appendChild(col);
@@ -356,60 +380,102 @@ function renderGrid(events) {
     }
 }
 
-// ---------------- Drag-to-select creation ----------------
+// ---------------- Drag-to-select creation (multi-jours) ----------------
 
-function enableDragSelect(body) {
-    let dragging = false;
-    let startMin = 0;
+function enableMultiDaySelect() {
+    if (!window.CAN_EDIT) return;
+    const daysWrap = document.getElementById('tt-days');
+    if (!daysWrap) return;
 
-    function minFromEvent(e) {
+    function allBodies() { return [...daysWrap.querySelectorAll('.tt-day-body')]; }
+    function bodyAtPoint(x, y) {
+        const elAt = document.elementFromPoint(x, y);
+        return elAt ? elAt.closest('.tt-day-body') : null;
+    }
+    function minFromEvent(e, body) {
         const rect = body.getBoundingClientRect();
         const ratio = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height));
-        const rawMin = ratio * TOTAL_MIN;
-        return Math.round(rawMin / SNAP_MIN) * SNAP_MIN;
+        return Math.round((ratio * TOTAL_MIN) / SNAP_MIN) * SNAP_MIN;
     }
 
-    body.addEventListener('mousedown', (e) => {
-        if (e.target !== body && !e.target.classList.contains('tt-empty-day')) return;
-        
-        clearActiveSelection();
+    function orderedRange(startBody, startMin, curBody, curMin) {
+        const bodies = allBodies();
+        let aIdx = bodies.indexOf(startBody), aMin = startMin;
+        let bIdx = bodies.indexOf(curBody), bMin = curMin;
+        if (aIdx > bIdx || (aIdx === bIdx && aMin > bMin)) {
+            [aIdx, bIdx] = [bIdx, aIdx];
+            [aMin, bMin] = [bMin, aMin];
+        }
+        return { bodies, aIdx, aMin, bIdx, bMin };
+    }
 
-        dragging = true;
+    function renderSelection(startBody, startMin, curBody, curMin) {
+        clearActiveSelection();
+        const { bodies, aIdx, aMin, bIdx, bMin } = orderedRange(startBody, startMin, curBody, curMin);
+        for (let i = aIdx; i <= bIdx; i++) {
+            let top, bottom;
+            if (aIdx === bIdx) { top = aMin; bottom = bMin; }
+            else if (i === aIdx) { top = aMin; bottom = TOTAL_MIN; }
+            else if (i === bIdx) { top = 0; bottom = bMin; }
+            else { top = 0; bottom = TOTAL_MIN; }
+            const sel = el('div', 'tt-selection');
+            sel.style.top = pct(top) + '%';
+            sel.style.height = Math.max(0, pct(bottom) - pct(top)) + '%';
+            bodies[i].appendChild(sel);
+            activeSelectionEls.push(sel);
+        }
+    }
+
+    let selecting = false;
+    let startBody = null, startMin = 0;
+
+    daysWrap.addEventListener('mousedown', (e) => {
+        const body = e.target.closest('.tt-day-body');
+        if (!body) return;
+        if (e.target !== body && !e.target.classList.contains('tt-empty-day')) return;
+        clearActiveSelection();
+        selecting = true;
         isDragging = true;
-        startMin = minFromEvent(e);
-        
-        activeSelectionEl = el('div', 'tt-selection');
-        activeSelectionEl.style.top = pct(startMin) + '%';
-        activeSelectionEl.style.height = '0%';
-        body.appendChild(activeSelectionEl);
+        startBody = body;
+        startMin = minFromEvent(e, body);
+        renderSelection(startBody, startMin, startBody, startMin);
         e.preventDefault();
     });
 
     document.addEventListener('mousemove', (e) => {
-        if (!dragging || !activeSelectionEl) return;
-        const curMin = minFromEvent(e);
-        const top = Math.min(startMin, curMin);
-        const bottom = Math.max(startMin, curMin);
-        activeSelectionEl.style.top = pct(top) + '%';
-        activeSelectionEl.style.height = pct(bottom - top) + '%';
+        if (!selecting) return;
+        const body = bodyAtPoint(e.clientX, e.clientY) || startBody;
+        const curMin = minFromEvent(e, body);
+        renderSelection(startBody, startMin, body, curMin);
     });
 
     document.addEventListener('mouseup', (e) => {
-        if (!dragging) return;
-        dragging = false;
+        if (!selecting) return;
+        selecting = false;
         isDragging = false;
-        const endMin = minFromEvent(e);
-        let top = Math.min(startMin, endMin);
-        let bottom = Math.max(startMin, endMin);
-
-        if (bottom - top < SNAP_MIN) {
+        const body = bodyAtPoint(e.clientX, e.clientY) || startBody;
+        const curMin = minFromEvent(e, body);
+        const { bodies, aIdx, aMin, bIdx, bMin } = orderedRange(startBody, startMin, body, curMin);
+        let top = aMin, bottom = bMin;
+        if (aIdx === bIdx && bottom - top < SNAP_MIN) {
             bottom = Math.min(TOTAL_MIN, top + 30);
-            if (activeSelectionEl) {
-                activeSelectionEl.style.top = pct(top) + '%';
-                activeSelectionEl.style.height = pct(bottom - top) + '%';
-            }
         }
-        openRdvPanel(null, body.dataset.date, minToTime(top), minToTime(bottom));
+        const dateStart = bodies[aIdx].dataset.date;
+        const dateEnd = bodies[bIdx].dataset.date;
+        // Memorise la position cliquee comme cible de collage (uniquement pour
+        // un clic simple sur un seul jour, pas pour une plage multi-jours).
+        if (aIdx === bIdx) {
+            pasteTargetDate = dateStart;
+            pasteTargetMin = top;
+        }
+        openRdvPanel(null, dateStart, minToTime(top), minToTime(bottom), dateEnd !== dateStart ? dateEnd : null);
+    });
+
+    // Clic sur du vide = deselectionne le rdv actif (pour Ctrl+C / fleches)
+    daysWrap.addEventListener('click', (e) => {
+        if (e.target.classList.contains('tt-day-body') || e.target.classList.contains('tt-empty-day')) {
+            selectEvent(null, null);
+        }
     });
 }
 
@@ -495,6 +561,9 @@ function attachBlockDrag(block, ev) {
         if (!moved) {
             mode = null;
             isDragging = false;
+            selectEvent(ev, block);
+            pasteTargetDate = ev.date;
+            pasteTargetMin = timeToMin(ev.heure_debut);
             openRdvPanel(ev);
             return;
         }
@@ -541,7 +610,7 @@ function showRdvPanel() {
     if (panelRdv) panelRdv.classList.remove('hidden');
 }
 
-function openRdvPanel(ev, presetDate, presetStart, presetEnd) {
+function openRdvPanel(ev, presetDate, presetStart, presetEnd, presetDateFin) {
     document.getElementById('modal-error').textContent = '';
     document.getElementById('new-category-box').classList.add('hidden');
     const deleteBtn = document.getElementById('rdv-delete');
@@ -598,10 +667,17 @@ function openRdvPanel(ev, presetDate, presetStart, presetEnd) {
         document.getElementById('rdv-category').value = '';
         document.getElementById('rdv-meta').textContent = '';
         multidayBlock.classList.toggle('hidden', readonly);
-        multidayCheck.checked = false;
-        multidayCheck.disabled = false;
-        multidayOptions.classList.add('hidden');
-        dateFinInput.value = presetDate || fmtDate(new Date());
+        if (presetDateFin) {
+            multidayCheck.checked = true;
+            multidayCheck.disabled = false;
+            multidayOptions.classList.remove('hidden');
+            dateFinInput.value = presetDateFin;
+        } else {
+            multidayCheck.checked = false;
+            multidayCheck.disabled = false;
+            multidayOptions.classList.add('hidden');
+            dateFinInput.value = presetDate || fmtDate(new Date());
+        }
         recurCheck.disabled = false;
         deleteBtn.classList.add('hidden');
         recurBlock.classList.toggle('hidden', readonly);
@@ -765,6 +841,183 @@ if (document.getElementById('add-rdv-btn')) {
 document.getElementById('prev-week').addEventListener('click', () => { currentMonday = addDays(currentMonday, -7); loadWeek(); });
 document.getElementById('next-week').addEventListener('click', () => { currentMonday = addDays(currentMonday, 7); loadWeek(); });
 document.getElementById('today-btn').addEventListener('click', () => { currentMonday = mondayOf(new Date()); loadWeek(); });
+
+// Molette de la souris sur l'emploi du temps -> semaine precedente/suivante
+const ttScrollZone = document.querySelector('.timetable');
+let wheelWeekLock = false;
+if (ttScrollZone) {
+    ttScrollZone.addEventListener('wheel', (e) => {
+        if (isPanelEditing) return;
+        e.preventDefault();
+        if (wheelWeekLock) return;
+        wheelWeekLock = true;
+        currentMonday = addDays(currentMonday, e.deltaY > 0 ? 7 : -7);
+        loadWeek();
+        setTimeout(() => { wheelWeekLock = false; }, 100);
+    }, { passive: false });
+}
+
+// ---------------- Copier / coller un rdv (Ctrl+C / Ctrl+V) ----------------
+
+function rdvConflicts(date, heureDebut, heureFin, excludeId) {
+    return lastLoadedEvents.some(ev => {
+        if (ev.is_balisage) return false;
+        if (excludeId && ev.id === excludeId) return false;
+        const evDate = ev.date, evDateFin = ev.date_fin || ev.date;
+        if (!(date >= evDate && date <= evDateFin)) return false;
+        return heureDebut < ev.heure_fin && heureFin > ev.heure_debut;
+    });
+}
+
+async function createPastedRdv(date, heureDebut, heureFin, src) {
+    const payload = {
+        date, heure_debut: heureDebut, heure_fin: heureFin,
+        titre: src.titre, description: src.description || '',
+        couleur: src.couleur, category_id: src.category_id || null,
+    };
+    const res = await fetch('/api/rdv', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok) { alert(data.error || "Erreur lors du collage"); return; }
+    if (isPanelEditing) closeRdvPanel();
+    loadWeek();
+}
+
+function pasteRdv() {
+    if (!clipboardRdv) return;
+    const src = clipboardRdv;
+    if (src.date_fin && src.date_fin !== src.date) {
+        alert("Le collage n'est pas disponible pour un evenement sur plusieurs jours.");
+        return;
+    }
+    const durationMin = timeToMin(src.heure_fin) - timeToMin(src.heure_debut);
+    if (durationMin <= 0) return;
+
+    // 1) Si l'utilisateur a clique quelque part depuis la copie -> coller a cet endroit
+    if (pasteTargetDate !== null && pasteTargetMin !== null) {
+        const date = pasteTargetDate;
+        const startMin = Math.max(0, Math.min(TOTAL_MIN - durationMin, pasteTargetMin));
+        const endMin = startMin + durationMin;
+        const start = minToTime(startMin), end = minToTime(endMin);
+
+        pasteTargetDate = null;
+        pasteTargetMin = null;
+
+        if (!rdvConflicts(date, start, end)) {
+            createPastedRdv(date, start, end, src);
+            return;
+        }
+        // ca ne rentre pas exactement a l'endroit clique -> essaie juste apres,
+        // puis juste avant cette position
+        const afterStartMin = endMin;
+        const afterEndMin = afterStartMin + durationMin;
+        if (afterEndMin <= TOTAL_MIN && !rdvConflicts(date, minToTime(afterStartMin), minToTime(afterEndMin))) {
+            createPastedRdv(date, minToTime(afterStartMin), minToTime(afterEndMin), src);
+            return;
+        }
+        const beforeStartMin = startMin - durationMin;
+        if (beforeStartMin >= 0 && !rdvConflicts(date, minToTime(beforeStartMin), minToTime(startMin))) {
+            createPastedRdv(date, minToTime(beforeStartMin), minToTime(startMin), src);
+            return;
+        }
+        alert("Impossible de coller ce rendez-vous a cet endroit (aucune place libre).");
+        return;
+    }
+
+    // 2) Sinon (pas de clic depuis la copie) -> juste apres la source, sinon juste avant
+    const afterStartMin = timeToMin(src.heure_fin);
+    const afterEndMin = afterStartMin + durationMin;
+    if (afterEndMin <= TOTAL_MIN) {
+        const afterStart = minToTime(afterStartMin), afterEnd = minToTime(afterEndMin);
+        if (!rdvConflicts(src.date, afterStart, afterEnd)) {
+            createPastedRdv(src.date, afterStart, afterEnd, src);
+            return;
+        }
+    }
+    const beforeStartMin = timeToMin(src.heure_debut) - durationMin;
+    if (beforeStartMin >= 0) {
+        const beforeStart = minToTime(beforeStartMin), beforeEnd = src.heure_debut;
+        if (!rdvConflicts(src.date, beforeStart, beforeEnd)) {
+            createPastedRdv(src.date, beforeStart, beforeEnd, src);
+            return;
+        }
+    }
+    alert("Impossible de coller ce rendez-vous sur cette semaine (aucune place libre avant/apres).");
+}
+
+// ---------------- Navigation clavier entre rdv (fleches) ----------------
+
+function navigateRdv(direction) {
+    const events = lastLoadedEvents.filter(e => !e.is_balisage)
+        .slice()
+        .sort((a, b) => (a.date + a.heure_debut).localeCompare(b.date + b.heure_debut));
+    if (events.length === 0) return;
+    let idx = selectedEvent ? events.findIndex(e => e.id === selectedEvent.id) : -1;
+    idx = idx === -1 ? (direction > 0 ? 0 : events.length - 1) : (idx + direction + events.length) % events.length;
+    const next = events[idx];
+    const block = document.querySelector(`.tt-block[data-id="${next.id}"]`);
+    selectEvent(next, block);
+    if (block) block.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    // Si le panneau est deja ouvert (ou pour afficher directement le rdv cible),
+    // on l'ouvre/actualise avec le nouvel evenement selectionne.
+    openRdvPanel(next);
+}
+
+async function deleteSelectedRdv() {
+    if (!selectedEvent || !window.CAN_EDIT) return;
+    if (selectedEvent.uneditable && window.USER_ROLE === 'editor') return;
+    if (!confirm('Supprimer ce rendez-vous ?')) return;
+    const id = selectedEvent.id;
+    selectedEvent = null;
+    closeRdvPanel();
+    await fetch(`/api/rdv/${id}`, { method: 'DELETE' });
+    loadWeek();
+}
+
+// ---------------- Raccourcis clavier globaux ----------------
+// NB: on ne bloque JAMAIS un raccourci juste parce que "isPanelEditing" est vrai
+// (le panneau s'ouvre automatiquement des qu'on selectionne un rdv au clic,
+// donc s'appuyer sur isPanelEditing desactiverait les raccourcis juste apres
+// la selection). On bloque uniquement si le focus est reellement dans un champ
+// de saisie (input/textarea/select), pour ne pas gener la frappe.
+
+document.addEventListener('keydown', (e) => {
+    const tag = (e.target.tagName || '').toLowerCase();
+    const typing = tag === 'input' || tag === 'textarea' || tag === 'select';
+
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
+        if (typing) return;
+        if (selectedEvent) {
+            clipboardRdv = { ...selectedEvent };
+            e.preventDefault();
+        }
+    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
+        if (typing) return;
+        if (clipboardRdv && window.CAN_EDIT) {
+            e.preventDefault();
+            pasteRdv();
+        }
+    } else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+        if (typing) return;
+        navigateRdv(e.key === 'ArrowRight' ? 1 : -1);
+        e.preventDefault();
+    } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (typing) return;
+        if (selectedEvent) {
+            deleteSelectedRdv();
+            e.preventDefault();
+        }
+    } else if (e.key === 'Escape') {
+        if (typing) return;
+        if (isPanelEditing) closeRdvPanel();
+        selectEvent(null, null);
+    }
+});
+
+enableMultiDaySelect();
 
 // ---------------- Realtime refresh ----------------
 
