@@ -55,6 +55,7 @@ def init_db():
     CREATE TABLE IF NOT EXISTS rdv (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         date TEXT NOT NULL,
+        date_fin TEXT,
         heure_debut TEXT NOT NULL,
         heure_fin TEXT NOT NULL,
         titre TEXT NOT NULL,
@@ -90,6 +91,8 @@ def init_db():
         db.execute('ALTER TABLE rdv ADD COLUMN is_balisage INTEGER DEFAULT 0')
     if 'uneditable' not in existing_cols:
         db.execute('ALTER TABLE rdv ADD COLUMN uneditable INTEGER DEFAULT 0')
+    if 'date_fin' not in existing_cols:
+        db.execute('ALTER TABLE rdv ADD COLUMN date_fin TEXT')
     db.commit()
 
     existing_user_cols = {row[1] for row in db.execute('PRAGMA table_info(users)')}
@@ -174,12 +177,24 @@ def _duration_minutes(heure_debut, heure_fin):
     return max(0, (h2 * 60 + m2) - (h1 * 60 + m1))
 
 
+def _event_duration_minutes(row):
+    """Duree reelle d'un evenement, en tenant compte d'une eventuelle plage
+    multi-jours continue (ex: 07/07 14h00 -> 08/07 15h00 = 25h = 1500 min)."""
+    date_fin = row['date_fin'] or row['date']
+    if date_fin == row['date']:
+        return _duration_minutes(row['heure_debut'], row['heure_fin'])
+    d1 = datetime.strptime(row['date'], '%Y-%m-%d')
+    d2 = datetime.strptime(date_fin, '%Y-%m-%d')
+    span_days = (d2 - d1).days
+    return span_days * 1440 + _duration_minutes(row['heure_debut'], row['heure_fin'])
+
+
 @app.route('/api/categories')
 @login_required
 def api_categories_list():
     db = get_db()
     cats = db.execute('SELECT * FROM categories ORDER BY nom').fetchall()
-    rdvs = db.execute('SELECT category_id, heure_debut, heure_fin FROM rdv').fetchall()
+    rdvs = db.execute('SELECT category_id, date, date_fin, heure_debut, heure_fin FROM rdv').fetchall()
 
     stats = {}
     for r in rdvs:
@@ -188,7 +203,7 @@ def api_categories_list():
             continue
         s = stats.setdefault(cid, {'nb': 0, 'total_min': 0})
         s['nb'] += 1
-        s['total_min'] += _duration_minutes(r['heure_debut'], r['heure_fin'])
+        s['total_min'] += _event_duration_minutes(r)
 
     result = []
     for c in cats:
@@ -284,6 +299,31 @@ RECURRENCE_FREQS = ('daily', 'weekly', 'monthly', 'yearly')
 MAX_MULTIDAY_SPAN = 365  # garde-fou anti-abus pour les evenements multi-jours
 
 
+def find_overlap(db, date_debut, heure_debut, date_fin, heure_fin, exclude_ids=None):
+    """Cherche un rdv existant (hors balisages) dont la plage continue
+    [date+heure_debut -> (date_fin ou date)+heure_fin] croise la plage
+    continue donnee. Un evenement multi-jours occupe TOUT l'intervalle
+    entre ses deux bornes (ex: 07/07 14h00 -> 08/07 15h00 = 25h d'affilee),
+    pas seulement le meme creneau horaire repete chaque jour.
+    Retourne la ligne en conflit ou None."""
+    exclude_ids = exclude_ids or []
+    start_dt = f'{date_debut} {heure_debut}'
+    end_dt = f'{date_fin} {heure_fin}'
+    query = '''
+        SELECT * FROM rdv
+        WHERE is_balisage = 0
+          AND (date || ' ' || heure_debut) < ?
+          AND (COALESCE(date_fin, date) || ' ' || heure_fin) > ?
+    '''
+    params = [end_dt, start_dt]
+    if exclude_ids:
+        placeholders = ','.join('?' for _ in exclude_ids)
+        query += f' AND id NOT IN ({placeholders})'
+        params.extend(exclude_ids)
+    query += ' LIMIT 1'
+    return db.execute(query, params).fetchone()
+
+
 @app.route('/api/rdv')
 @login_required
 def api_rdv_list():
@@ -297,9 +337,9 @@ def api_rdv_list():
            FROM rdv
            LEFT JOIN users ON users.id = rdv.created_by
            LEFT JOIN categories ON categories.id = rdv.category_id
-           WHERE date BETWEEN ? AND ?
+           WHERE date <= ? AND COALESCE(date_fin, date) >= ?
            ORDER BY date, heure_debut''',
-        (start, end)
+        (end, start)
     ).fetchall()
     return jsonify([dict(r) for r in rows])
 
@@ -327,9 +367,18 @@ def api_rdv_create():
     required = ('date', 'heure_debut', 'heure_fin', 'titre')
     if not all(data.get(f) for f in required):
         return jsonify({'error': 'champs manquants (date, heure_debut, heure_fin, titre)'}), 400
-    if data['heure_fin'] <= data['heure_debut']:
-        return jsonify({'error': "l'heure de fin doit etre apres l'heure de debut"}), 400
 
+    try:
+        base_date = datetime.strptime(data['date'], '%Y-%m-%d')
+    except ValueError:
+        return jsonify({'error': 'date invalide'}), 400
+
+    user = current_user()
+    is_admin = user and user['role'] == 'admin'
+    uneditable = int(data.get('uneditable', 0)) if is_admin else 0
+    is_balisage = int(data.get('is_balisage', 0)) if is_admin else 0
+
+    date_fin_raw = (data.get('date_fin') or '').strip()
     recurrence = data.get('recurrence') or 'none'
     try:
         count = int(data.get('recurrence_count') or 1)
@@ -337,26 +386,49 @@ def api_rdv_create():
         count = 1
     count = max(1, min(count, 104))
 
-    try:
-        base_date = datetime.strptime(data['date'], '%Y-%m-%d')
-    except ValueError:
-        return jsonify({'error': 'date invalide'}), 400
+    db = get_db()
 
-    date_fin_raw = (data.get('date_fin') or '').strip()
-
-    dates = [base_date]
     if date_fin_raw:
-        # Evenement sur plusieurs jours : une occurrence par jour, meme horaire,
-        # meme titre/categorie, jusqu'a la date de fin incluse.
+        # Evenement sur plusieurs jours : UN SEUL evenement continu, stocke sur
+        # une seule ligne (date+heure_debut -> date_fin+heure_fin). Ex: 07/07 14h00
+        # -> 08/07 15h00 dure 25h d'affilee, ce n'est pas le meme creneau repete
+        # chaque jour.
         try:
             end_date = datetime.strptime(date_fin_raw, '%Y-%m-%d')
         except ValueError:
             return jsonify({'error': 'date de fin invalide'}), 400
         if end_date < base_date:
             return jsonify({'error': 'la date de fin doit etre posterieure ou egale a la date de debut'}), 400
-        span_days = min((end_date - base_date).days, MAX_MULTIDAY_SPAN)
-        dates = [base_date + timedelta(days=i) for i in range(span_days + 1)]
-    elif recurrence in RECURRENCE_FREQS and count > 1:
+        if end_date == base_date and data['heure_fin'] <= data['heure_debut']:
+            return jsonify({'error': "l'heure de fin doit etre apres l'heure de debut"}), 400
+        if (end_date - base_date).days > MAX_MULTIDAY_SPAN:
+            return jsonify({'error': "duree de l'evenement trop longue"}), 400
+
+        date_str = base_date.strftime('%Y-%m-%d')
+        date_fin_str = end_date.strftime('%Y-%m-%d')
+
+        if not is_balisage:
+            conflict = find_overlap(db, date_str, data['heure_debut'], date_fin_str, data['heure_fin'])
+            if conflict:
+                return jsonify({'error': f"Chevauchement avec \"{conflict['titre']}\" ({conflict['date']} {conflict['heure_debut']} -> {conflict['date_fin'] or conflict['date']} {conflict['heure_fin']})"}), 409
+
+        cur = db.execute(
+            '''INSERT INTO rdv (date, date_fin, heure_debut, heure_fin, titre, description, couleur, category_id, created_by, uneditable, is_balisage)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
+            (date_str, date_fin_str, data['heure_debut'], data['heure_fin'], data['titre'],
+             data.get('description', ''), data.get('couleur') or DEFAULT_COLOR,
+             data.get('category_id') or None, session['user_id'], uneditable, is_balisage)
+        )
+        db.commit()
+        return jsonify({'id': cur.lastrowid, 'ids': [cur.lastrowid], 'count': 1}), 201
+
+    # Sinon : evenement simple, ou recurrent (plusieurs occurrences distinctes,
+    # chacune sur un seul jour -> ce ne sont pas des "segments" d'un meme evenement).
+    if data['heure_fin'] <= data['heure_debut']:
+        return jsonify({'error': "l'heure de fin doit etre apres l'heure de debut"}), 400
+
+    dates = [base_date]
+    if recurrence in RECURRENCE_FREQS and count > 1:
         for i in range(1, count):
             if recurrence == 'daily':
                 dates.append(base_date + timedelta(days=i))
@@ -367,19 +439,20 @@ def api_rdv_create():
             elif recurrence == 'yearly':
                 dates.append(add_months(base_date, 12 * i))
 
-    user = current_user()
-    is_admin = user and user['role'] == 'admin'
+    date_strs = [d.strftime('%Y-%m-%d') for d in dates]
 
-    uneditable = int(data.get('uneditable', 0)) if is_admin else 0
-    is_balisage = int(data.get('is_balisage', 0)) if is_admin else 0
+    if not is_balisage:
+        for ds in date_strs:
+            conflict = find_overlap(db, ds, data['heure_debut'], ds, data['heure_fin'])
+            if conflict:
+                return jsonify({'error': f"Chevauchement avec \"{conflict['titre']}\" ({conflict['date']} {conflict['heure_debut']} -> {conflict['date_fin'] or conflict['date']} {conflict['heure_fin']})"}), 409
 
-    db = get_db()
     ids = []
-    for d in dates:
+    for ds in date_strs:
         cur = db.execute(
-            '''INSERT INTO rdv (date, heure_debut, heure_fin, titre, description, couleur, category_id, created_by, uneditable, is_balisage)
-               VALUES (?,?,?,?,?,?,?,?,?,?)''',
-            (d.strftime('%Y-%m-%d'), data['heure_debut'], data['heure_fin'], data['titre'],
+            '''INSERT INTO rdv (date, date_fin, heure_debut, heure_fin, titre, description, couleur, category_id, created_by, uneditable, is_balisage)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
+            (ds, None, data['heure_debut'], data['heure_fin'], data['titre'],
              data.get('description', ''), data.get('couleur') or DEFAULT_COLOR,
              data.get('category_id') or None, session['user_id'], uneditable, is_balisage)
         )
@@ -405,6 +478,10 @@ def api_rdv_update(rdv_id):
 
     fields = {k: data[k] for k in ('date', 'heure_debut', 'heure_fin', 'titre', 'description', 'couleur', 'category_id') if k in data}
 
+    if 'date_fin' in data:
+        raw = data.get('date_fin')
+        fields['date_fin'] = raw.strip() if raw else None
+
     if is_admin:
         if 'uneditable' in data:
             fields['uneditable'] = int(data['uneditable'])
@@ -413,6 +490,27 @@ def api_rdv_update(rdv_id):
 
     if not fields:
         return jsonify({'error': 'rien a mettre a jour'}), 400
+
+    new_date = fields.get('date', row['date'])
+    new_date_fin = fields['date_fin'] if 'date_fin' in fields else row['date_fin']
+    new_heure_debut = fields.get('heure_debut', row['heure_debut'])
+    new_heure_fin = fields.get('heure_fin', row['heure_fin'])
+    new_is_balisage = fields.get('is_balisage', row['is_balisage'])
+
+    if new_date_fin and new_date_fin < new_date:
+        return jsonify({'error': 'la date de fin doit etre posterieure ou egale a la date de debut'}), 400
+    # Meme jour (pas de plage multi-jours) : l'heure de fin doit suivre l'heure de debut.
+    # Plage multi-jours (date_fin > date) : la duree reelle est forcement positive
+    # (ex: 07/07 14h00 -> 08/07 15h00 = 25h), heure_fin peut donc etre < heure_debut.
+    if (not new_date_fin or new_date_fin == new_date) and new_heure_fin <= new_heure_debut:
+        return jsonify({'error': "l'heure de fin doit etre apres l'heure de debut"}), 400
+
+    date_end_check = new_date_fin or new_date
+
+    if not new_is_balisage:
+        conflict = find_overlap(db, new_date, new_heure_debut, date_end_check, new_heure_fin, exclude_ids=[rdv_id])
+        if conflict:
+            return jsonify({'error': f"Chevauchement avec \"{conflict['titre']}\" ({conflict['date']} {conflict['heure_debut']} -> {conflict['date_fin'] or conflict['date']} {conflict['heure_fin']})"}), 409
 
     set_clause = ', '.join(f'{k} = ?' for k in fields)
     db.execute(f'UPDATE rdv SET {set_clause} WHERE id = ?', (*fields.values(), rdv_id))

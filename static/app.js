@@ -180,17 +180,22 @@ function renderGrid(events) {
             body.appendChild(line);
         }
 
-        const dayEvents = events.filter(e => e.date === dateStr);
+        // Un evenement occupe chaque jour compris entre sa date de debut et sa
+        // date de fin (evenement multi-jours = un seul objet, affiche sur plusieurs colonnes).
+        const dayEvents = events.filter(e => e.date <= dateStr && (e.date_fin || e.date) >= dateStr);
         if (dayEvents.length === 0) {
             body.appendChild(el('div', 'tt-empty-day', 'Libre'));
         }
         dayEvents.forEach(ev => {
-            const top = pct(Math.max(0, timeToMin(ev.heure_debut)));
-            const bottom = pct(Math.min(TOTAL_MIN, timeToMin(ev.heure_fin)));
             const color = ev.couleur || DEFAULT_COLOR;
+            const isMultiDay = !!(ev.date_fin && ev.date_fin !== ev.date);
+            const isStartDay = ev.date === dateStr;
+            const isEndDay = (ev.date_fin || ev.date) === dateStr;
 
             // Rendu sous forme de balisage (Hachures)
             if (ev.is_balisage) {
+                const top = pct(Math.max(0, timeToMin(ev.heure_debut)));
+                const bottom = pct(Math.min(TOTAL_MIN, timeToMin(ev.heure_fin)));
                 const block = el('div', 'tt-balisage');
                 block.style.top = top + '%';
                 block.style.height = Math.max(2.5, bottom - top) + '%';
@@ -231,13 +236,27 @@ function renderGrid(events) {
             // Gestion de l'interdiction d'édition pour les Editeurs
             const isUneditableForEditor = ev.uneditable && window.USER_ROLE === 'editor';
             const canUserEditThisBlock = window.CAN_EDIT && !isUneditableForEditor;
+            // Un evenement multi-jours est un objet unique : on ne permet pas de le
+            // glisser/redimensionner depuis une case journaliere (il faut passer par le
+            // panneau lateral). Seul le clic pour ouvrir le panneau reste disponible.
+            const canDragThisBlock = canUserEditThisBlock && !isMultiDay;
 
-            const block = el('div', 'tt-block' + (canUserEditThisBlock ? ' editable' : ''));
+            // Plage continue : l'evenement occupe TOUT le jour visible (07h-23h) sur
+            // les jours intermediaires, seulement le debut sur son jour de depart et
+            // seulement la fin sur son jour d'arrivee (ex: 07/07 14h00 -> 08/07 15h00).
+            const segStartMin = isStartDay ? Math.max(0, timeToMin(ev.heure_debut)) : 0;
+            const segEndMin = isEndDay ? Math.min(TOTAL_MIN, timeToMin(ev.heure_fin)) : TOTAL_MIN;
+            const top = pct(segStartMin);
+            const bottom = pct(Math.max(segStartMin + 1, segEndMin));
+
+            const block = el('div', 'tt-block' + (canDragThisBlock ? ' editable' : '') +
+                (isMultiDay && !isStartDay ? ' tt-block-cont-before' : '') +
+                (isMultiDay && !isEndDay ? ' tt-block-cont-after' : ''));
             block.style.top = top + '%';
             block.style.height = Math.max(2.5, bottom - top) + '%';
             block.style.background = color;
 
-            const durationMin = timeToMin(ev.heure_fin) - timeToMin(ev.heure_debut);
+            const durationMin = segEndMin - segStartMin;
             let descHtml = '';
             if (ev.description && ev.description.trim() && durationMin >= 30) {
                 let clamp = 1;
@@ -246,13 +265,26 @@ function renderGrid(events) {
                 descHtml = `<span class="tt-block-desc" style="-webkit-line-clamp:${clamp};">${escapeHtml(ev.description)}</span>`;
             }
 
+            let timeLabel;
+            if (!isMultiDay) {
+                timeLabel = `${ev.heure_debut} - ${ev.heure_fin}`;
+            } else if (isStartDay && isEndDay) {
+                timeLabel = `${ev.heure_debut} - ${ev.heure_fin}`;
+            } else if (isStartDay) {
+                timeLabel = `${ev.heure_debut} → (suite)`;
+            } else if (isEndDay) {
+                timeLabel = `(suite) → ${ev.heure_fin}`;
+            } else {
+                timeLabel = `(suite)`;
+            }
+
             const contentHtml = `
                 ${ev.categorie_nom ? `<span class="tt-block-category">${escapeHtml(ev.categorie_nom)}</span>` : ''}
-                <span class="tt-block-subject">${escapeHtml(ev.titre)} ${ev.uneditable ? '🔒' : ''}</span>
+                <span class="tt-block-subject">${escapeHtml(ev.titre)} ${ev.uneditable ? '🔒' : ''} ${isMultiDay ? '↔️' : ''}</span>
                 ${descHtml}
-                <span class="tt-block-time">${ev.heure_debut} - ${ev.heure_fin}</span>`;
+                <span class="tt-block-time">${timeLabel}</span>`;
 
-            if (canUserEditThisBlock) {
+            if (canDragThisBlock) {
                 block.innerHTML = `<div class="tt-resize-handle tt-resize-top"></div>${contentHtml}<div class="tt-resize-handle tt-resize-bottom"></div>`;
                 attachBlockDrag(block, ev);
             } else {
@@ -540,10 +572,16 @@ function openRdvPanel(ev, presetDate, presetStart, presetEnd) {
         document.getElementById('rdv-color').value = ev.couleur || DEFAULT_COLOR;
         document.getElementById('rdv-category').value = ev.category_id || '';
         document.getElementById('rdv-meta').textContent = ev.auteur ? `Cree par ${ev.auteur} le ${ev.created_at}` : '';
-        multidayBlock.classList.add('hidden');
-        multidayCheck.checked = false;
+
+        // Evenement multi-jours : reste editable (rallonger/raccourcir la plage
+        // de dates) depuis le panneau, meme si non modifiable par drag sur la grille.
+        const evIsMultiDay = !!(ev.date_fin && ev.date_fin !== ev.date);
+        multidayBlock.classList.toggle('hidden', readonly);
+        multidayCheck.checked = evIsMultiDay;
         multidayCheck.disabled = false;
-        multidayOptions.classList.add('hidden');
+        multidayOptions.classList.toggle('hidden', !evIsMultiDay);
+        dateFinInput.value = ev.date_fin || ev.date;
+
         deleteBtn.classList.toggle('hidden', readonly);
         recurBlock.classList.add('hidden');
         recurCheck.checked = false;
@@ -660,6 +698,7 @@ form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const id = document.getElementById('rdv-id').value;
     const categoryVal = document.getElementById('rdv-category').value;
+    const multidayChecked = document.getElementById('rdv-multiday-check').checked;
     const payload = {
         date: document.getElementById('rdv-date').value,
         heure_debut: document.getElementById('rdv-start').value,
@@ -675,11 +714,19 @@ form.addEventListener('submit', async (e) => {
         payload.is_balisage = document.getElementById('rdv-is-balisage').checked ? 1 : 0;
     }
 
+    // Evenement sur plusieurs jours : un seul evenement continu (date -> date_fin),
+    // pas segmente jour par jour. La case decochee efface une date_fin existante.
+    if (multidayChecked) {
+        const df = document.getElementById('rdv-date-fin').value;
+        payload.date_fin = df || null;
+    } else {
+        payload.date_fin = null;
+    }
+
     if (!id) {
-        if (document.getElementById('rdv-multiday-check').checked) {
-            const df = document.getElementById('rdv-date-fin').value;
-            if (df) payload.date_fin = df;
-        } else if (document.getElementById('rdv-recur-check').checked) {
+        // La recurrence (occurrences distinctes) n'a de sens qu'a la creation,
+        // et est incompatible avec un evenement multi-jours continu.
+        if (!multidayChecked && document.getElementById('rdv-recur-check').checked) {
             payload.recurrence = document.getElementById('rdv-recur-freq').value;
             payload.recurrence_count = parseInt(document.getElementById('rdv-recur-count').value, 10) || 1;
         }
