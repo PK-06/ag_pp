@@ -166,6 +166,7 @@ tr:hover td { background: #fafbfc; }
 .badge-admin { background: #efe3f5; color: #6a3a9a; }
 .badge-editor { background: var(--blue-light); color: var(--blue); }
 .badge-viewer { background: #e5e7eb; color: #374151; }
+.badge-user { background: #dcf0e6; color: #1e6b45; }
 
 /* --- Forms --- */
 label { display: block; font-size: .82rem; font-weight: 600; margin-bottom: .25rem; margin-top: .7rem; color: var(--navy); }

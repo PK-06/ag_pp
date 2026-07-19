@@ -36,6 +36,9 @@
     <a class="nav-link {% if request.endpoint == 'categories_view' %}active{% endif %}" href="{{ url_for('categories_view') }}" title="Categories">
       <span class="nav-icon"><i class="bx bx-purchase-tag-alt"></i></span><span class="nav-label">Categories</span>
     </a>
+    <a class="nav-link {% if request.endpoint == 'segmented_view' %}active{% endif %}" href="{{ url_for('segmented_view') }}" title="Vue globale">
+      <span class="nav-icon"><i class="bx bx-columns"></i></span><span class="nav-label">Vue globale</span>
+    </a>
     <a class="nav-link {% if request.endpoint == 'chat_view' %}active{% endif %}" href="{{ url_for('chat_view') }}" title="Chat">
       <span class="nav-icon"><i class="bx bx-message-dots"></i></span><span class="nav-label">Chat</span>
     </a>
@@ -50,6 +53,7 @@
       <div class="user-role nav-label">
         {% if current_user['role'] == 'admin' %}Administrateur
         {% elif current_user['role'] == 'editor' %}Editeur
+        {% elif current_user['role'] == 'user' %}Utilisateur
         {% else %}Lecteur{% endif %}
       </div>
       <a class="logout-link nav-label" href="{{ url_for('logout') }}" title="Se deconnecter">

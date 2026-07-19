@@ -161,7 +161,7 @@ async function loadWeek() {
     document.getElementById('week-label').textContent = weekLabel(currentMonday);
     const start = fmtDate(currentMonday);
     const end = fmtDate(addDays(currentMonday, 6));
-    const res = await fetch(`/api/rdv?start=${start}&end=${end}`);
+    const res = await fetch(`/api/rdv?start=${start}&end=${end}&scope=mine`);
     const events = await res.json();
     lastLoadedEvents = events;
     renderGrid(events);
@@ -255,8 +255,8 @@ function renderGrid(events) {
             }
 
             // Gestion de l'interdiction d'édition pour les Editeurs
-            const isUneditableForEditor = ev.uneditable && window.USER_ROLE === 'editor';
-            const canUserEditThisBlock = window.CAN_EDIT && !isUneditableForEditor;
+            const isLockedForNonAdmin = ev.uneditable && window.USER_ROLE !== 'admin';
+            const canUserEditThisBlock = window.CAN_EDIT && !isLockedForNonAdmin;
             // Un evenement multi-jours est un objet unique : on ne permet pas de le
             // glisser/redimensionner depuis une case journaliere (il faut passer par le
             // panneau lateral). Seul le clic pour ouvrir le panneau reste disponible.
@@ -302,7 +302,7 @@ function renderGrid(events) {
 
             const contentHtml = `
                 ${ev.categorie_nom ? `<span class="tt-block-category">${escapeHtml(ev.categorie_nom)}</span>` : ''}
-                <span class="tt-block-subject">${escapeHtml(ev.titre)} ${ev.uneditable ? '🔒' : ''} ${isMultiDay ? '↔️' : ''}</span>
+                <span class="tt-block-subject">${ev.owner_id ? '👤 ' : ''}${escapeHtml(ev.titre)} ${ev.uneditable ? '🔒' : ''} ${isMultiDay ? '↔️' : ''}</span>
                 ${descHtml}
                 <span class="tt-block-time">${timeLabel}</span>`;
 
@@ -619,8 +619,8 @@ function openRdvPanel(ev, presetDate, presetStart, presetEnd, presetDateFin) {
     const saveBtn = document.getElementById('rdv-save');
 
     // Vérifie si l'éditeur tente d'ouvrir un élément bloqué
-    const isUneditableForEditor = ev && ev.uneditable && window.USER_ROLE === 'editor';
-    const readonly = !window.CAN_EDIT || isUneditableForEditor;
+    const isLockedForNonAdmin = ev && ev.uneditable && window.USER_ROLE !== 'admin';
+    const readonly = !window.CAN_EDIT || isLockedForNonAdmin;
 
     const recurBlock = document.getElementById('rdv-recur-block');
     const recurCheck = document.getElementById('rdv-recur-check');
@@ -643,6 +643,7 @@ function openRdvPanel(ev, presetDate, presetStart, presetEnd, presetDateFin) {
         document.getElementById('rdv-color').value = ev.couleur || DEFAULT_COLOR;
         document.getElementById('rdv-category').value = ev.category_id || '';
         document.getElementById('rdv-meta').textContent = ev.auteur ? `Cree par ${ev.auteur} le ${ev.created_at}` : '';
+        document.getElementById('rdv-scope').value = ev.owner_id ? 'mine' : 'shared';
 
         // Evenement multi-jours : reste editable (rallonger/raccourcir la plage
         // de dates) depuis le panneau, meme si non modifiable par drag sur la grille.
@@ -668,6 +669,7 @@ function openRdvPanel(ev, presetDate, presetStart, presetEnd, presetDateFin) {
         document.getElementById('rdv-color').value = DEFAULT_COLOR;
         document.getElementById('rdv-category').value = '';
         document.getElementById('rdv-meta').textContent = '';
+        document.getElementById('rdv-scope').value = 'shared';
         multidayBlock.classList.toggle('hidden', readonly);
         if (presetDateFin) {
             multidayCheck.checked = true;
@@ -785,6 +787,7 @@ form.addEventListener('submit', async (e) => {
         description: document.getElementById('rdv-desc').value,
         couleur: document.getElementById('rdv-color').value,
         category_id: categoryVal ? parseInt(categoryVal, 10) : null,
+        owner_id: document.getElementById('rdv-scope').value === 'mine' ? window.CURRENT_USER_ID : null,
     };
 
     if (window.USER_ROLE === 'admin') {
@@ -876,6 +879,7 @@ async function createPastedRdv(date, heureDebut, heureFin, src) {
         date, heure_debut: heureDebut, heure_fin: heureFin,
         titre: src.titre, description: src.description || '',
         couleur: src.couleur, category_id: src.category_id || null,
+        owner_id: src.owner_id || null,
     };
     const res = await fetch('/api/rdv', {
         method: 'POST',
@@ -970,7 +974,7 @@ function navigateRdv(direction) {
 
 async function deleteSelectedRdv() {
     if (!selectedEvent || !window.CAN_EDIT) return;
-    if (selectedEvent.uneditable && window.USER_ROLE === 'editor') return;
+    if (selectedEvent.uneditable && window.USER_ROLE !== 'admin') return;
     if (!confirm('Supprimer ce rendez-vous ?')) return;
     const id = selectedEvent.id;
     selectedEvent = null;

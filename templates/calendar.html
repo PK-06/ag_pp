@@ -44,7 +44,7 @@
             <button id="today-btn" class="btn btn-outline btn-sm">Aujourd'hui</button>
             <button id="next-week" class="btn btn-outline btn-sm">Semaine suiv. &rarr;</button>
             <div style="flex:1"></div>
-            {% if current_user['role'] in ('admin', 'editor') %}
+            {% if current_user['role'] in ('admin', 'editor', 'user') %}
             <button id="add-rdv-btn" class="btn btn-sm">+ Nouveau RDV</button>
             {% endif %}
         </div>
@@ -102,6 +102,12 @@
                         <input type="color" id="rdv-color" value="#2e5c8a">
                     </div>
                 </div>
+
+                <label>Visibilite</label>
+                <select id="rdv-scope">
+                    <option value="shared">Partage (visible et modifiable par tous)</option>
+                    <option value="mine">Personnel (visible et modifiable par moi seul)</option>
+                </select>
                 <div id="new-category-box" class="new-category-box hidden">
                     <input type="text" id="new-category-name" placeholder="Nom de la categorie" maxlength="60">
                     <input type="color" id="new-category-color" value="#2e5c8a">
@@ -172,8 +178,9 @@
 </div>
 
 <script>
-    window.CAN_EDIT = {{ 'true' if current_user['role'] in ('admin', 'editor') else 'false' }};
+    window.CAN_EDIT = {{ 'true' if current_user['role'] in ('admin', 'editor', 'user') else 'false' }};
     window.USER_ROLE = '{{ current_user["role"] }}';
+    window.CURRENT_USER_ID = {{ current_user['id'] }};
 </script>
 <script src="{{ url_for('static', filename='app.js') }}"></script>
 {% endblock %}
